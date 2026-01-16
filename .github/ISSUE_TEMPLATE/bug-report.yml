@@ -49,4 +49,4 @@ body:
         - label: Pre-production
         - label: Production
     validations:
-      required: false
+      required: true
