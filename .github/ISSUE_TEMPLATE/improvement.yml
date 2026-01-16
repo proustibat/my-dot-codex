@@ -1,7 +1,7 @@
 name: ✨ Improvement / Feature
 description: Suggest an improvement or a new feature
 title: "[Improvement] "
-labels: []
+labels: ["Improvement"]
 assignees: []
 projects:
   - "proustibat/1"
