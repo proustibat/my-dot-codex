@@ -1,0 +1,39 @@
+name: ✨ Improvement / Feature
+description: Suggest an improvement or a new feature
+title: "[Improvement] "
+labels: []
+assignees: []
+projects:
+  - "proustibat/1"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        <!-- Thanks for the suggestion! Keep it simple 👍 -->
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What do you want to improve?
+      description: Describe the problem or limitation.
+      placeholder: What feels wrong, missing, or could be better?
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why?
+      description: What value does this bring?
+      placeholder: UX, client feedback, tech debt, performance, clarity…
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: Proposed idea (optional)
+      description: If you already have something in mind.
+      placeholder: This is optional — feel free to skip.
+    validations:
+      required: false
