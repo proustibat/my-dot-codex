@@ -1,6 +1,6 @@
 name: 🐞 Bug
 description: Something is not working as expected
-title: "[Bug] "
+title: "[🐞] "
 labels: ["bug"]
 assignees: []
 projects:
