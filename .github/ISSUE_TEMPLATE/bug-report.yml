@@ -12,11 +12,11 @@ body:
         <!-- Thanks for reporting a bug! Short and clear is perfect 👍 -->
 
   - type: textarea
-    id: description
+    id: problem
     attributes:
-      label: Bug description
-      description: What is not working?
-      placeholder: Describe the issue clearly.
+      label: What is wrong?
+      description: Describe what is not working.
+      placeholder: A short description of the issue.
     validations:
       required: true
 
@@ -40,21 +40,13 @@ body:
     validations:
       required: true
 
-  - type: textarea
-    id: actual
-    attributes:
-      label: Actual behavior
-      description: What happens instead?
-    validations:
-      required: true
-
-  - type: textarea
+  - type: checkboxes
     id: environment
     attributes:
-      label: Environment (optional)
-      description: Useful context if relevant
-      placeholder: |
-        - Page / feature:
-        - Preprod or Prod:
+      label: Environment
+      description: Where does the issue happen?
+      options:
+        - label: Pre-production
+        - label: Production
     validations:
       required: false
