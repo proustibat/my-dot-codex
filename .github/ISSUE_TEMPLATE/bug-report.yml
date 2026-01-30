@@ -50,3 +50,15 @@ body:
         - label: Production
     validations:
       required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: What is the priority of this issue?
+      options:
+        - p0
+        - p1
+      default: 0
+    validations:
+      required: true
