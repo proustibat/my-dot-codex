@@ -1,0 +1,190 @@
+name: Sync Issue Priority to User Project V2 (and remove from body)
+
+on:
+  issues:
+    types: [opened, edited]
+
+jobs:
+  sync-priority:
+    runs-on: ubuntu-latest
+    env:
+      PROJECT_NUMBER: 1    # change if your user project number is different
+    steps:
+      - name: Sync Priority to Project V2 and remove from issue body
+        uses: actions/github-script@v6
+        with:
+          # Prefer a PAT stored in GH_PAT (needs repo + project scopes).
+          # Falls back to GITHUB_TOKEN if GH_PAT is not set (may lack project:write).
+          github-token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          script: |
+            try {
+              const issue = context.payload.issue;
+              if (!issue) {
+                core.info("No issue in context — exiting.");
+                return;
+              }
+
+              const owner = context.repo.owner; // e.g. "proustibat"
+              const repo = context.repo.repo;   // e.g. "my-dot-codex"
+              const issueNumber = issue.number;
+              const projectNumber = parseInt(process.env.PROJECT_NUMBER, 10);
+
+              // --- extract Priority robustly (strip code blocks first) ---
+              const rawBody = issue.body || "";
+              function stripCodeBlocks(s) {
+                s = s.replace(/```[\s\S]*?```/g, ""); // fenced blocks
+                s = s.replace(/`[^`]*`/g, ""); // inline code
+                return s;
+              }
+              const cleanBody = stripCodeBlocks(rawBody);
+
+              // 1) inline "Priority: value"
+              let chosenPriorityRaw = null;
+              const inlineRe = /(?:^|\n)\s*(?:\*\*Priority\*\*|Priority)\s*:\s*(.+)/i;
+              const inlineMatch = cleanBody.match(inlineRe);
+              if (inlineMatch && inlineMatch[1]) {
+                chosenPriorityRaw = inlineMatch[1].trim().split("\n")[0].trim();
+                core.info(`Found inline Priority: '${chosenPriorityRaw}'`);
+              }
+
+              // 2) header style "### Priority" then next non-empty line
+              if (!chosenPriorityRaw) {
+                const headerRe = /(?:^|\n)\s*#{1,6}\s*\*?Priority\*?\s*(?:\n+)/i;
+                const headerMatch = cleanBody.match(headerRe);
+                if (headerMatch) {
+                  core.info("Found Priority header.");
+                  const headerIndex = cleanBody.indexOf(headerMatch[0]) + headerMatch[0].length;
+                  const after = cleanBody.slice(headerIndex);
+                  const lines = after.split(/\r?\n/);
+                  for (const l of lines) {
+                    const t = l.trim();
+                    if (t.length === 0) continue;
+                    // handle bullets / checkboxes
+                    const stripped = t.replace(/^([-*]\s*)/, '').trim();
+                    if (stripped.length > 0) { chosenPriorityRaw = stripped; break; }
+                    chosenPriorityRaw = t; break;
+                  }
+                  if (chosenPriorityRaw) core.info(`Found header Priority value: '${chosenPriorityRaw}'`);
+                }
+              }
+
+              if (!chosenPriorityRaw) {
+                core.info("No Priority found in issue body — nothing to sync.");
+                return;
+              }
+
+              const normalizedCandidate = chosenPriorityRaw.trim();
+              const lower = normalizedCandidate.toLowerCase();
+              const tokenMatch = (normalizedCandidate.match(/(p\d)/i) || [null])[0];
+              core.info(`Candidate: '${normalizedCandidate}', token: '${tokenMatch || ''}'`);
+
+              // --- GraphQL: read the projectV2 fields & items (single-select options are under ProjectV2SingleSelectField.options) ---
+              const QUERY = `
+                query($owner:String!, $repo:String!, $projectNumber:Int!, $issueNumber:Int!) {
+                  user(login:$owner) {
+                    projectV2(number:$projectNumber) {
+                      id
+                      fields(first:100) {
+                        nodes {
+                          __typename
+                          ... on ProjectV2Field { id name }
+                          ... on ProjectV2SingleSelectField { id name options { id name } }
+                        }
+                      }
+                      items(first:100) {
+                        nodes {
+                          id
+                          content { ... on Issue { id } }
+                        }
+                      }
+                    }
+                  }
+                  repository(owner:$owner, name:$repo) {
+                    issue(number:$issueNumber) { id }
+                  }
+                }
+              `;
+              const res = await github.graphql(QUERY, { owner, repo, projectNumber, issueNumber });
+              const project = res.user && res.user.projectV2;
+              const repository = res.repository;
+              if (!project) throw new Error(`Project #${projectNumber} not found for user ${owner}.`);
+              if (!repository) throw new Error(`Repository ${owner}/${repo} not found.`);
+
+              const projectId = project.id;
+              const issueNodeId = repository.issue.id;
+
+              // find the Priority field (case-insensitive)
+              const fields = project.fields && project.fields.nodes || [];
+              const priorityField = fields.find(f => f.name && f.name.toLowerCase().includes('priority'));
+              if (!priorityField) throw new Error("Priority field not found in project fields.");
+              if (!priorityField.options) throw new Error("Priority field has no options under ProjectV2SingleSelectField.options.");
+
+              core.info(`Found Priority field id=${priorityField.id}, name=${priorityField.name}`);
+              const options = priorityField.options || [];
+              core.info(`Project Priority options: ${options.map(o => o.name).join(', ')}`);
+
+              // match option: exact -> contains -> token Pn
+              let option = options.find(o => o.name && o.name.toLowerCase() === lower);
+              if (!option) option = options.find(o => o.name && o.name.toLowerCase().includes(lower));
+              if (!option && tokenMatch) {
+                const tok = tokenMatch.toLowerCase();
+                option = options.find(o => o.name && o.name.toLowerCase().includes(tok));
+              }
+
+              if (!option) {
+                core.info(`Available Priority options: ${options.map(o => o.name).join(', ')}`);
+                throw new Error(`No matching option for '${normalizedCandidate}' in Priority field.`);
+              }
+              core.info(`Matched option: ${option.name} (id=${option.id})`);
+
+              // find or create the project item for this issue
+              let itemId = null;
+              if (project.items && project.items.nodes) {
+                for (const n of project.items.nodes) {
+                  if (n.content && n.content.id === issueNodeId) { itemId = n.id; break; }
+                }
+              }
+              if (!itemId) {
+                const addRes = await github.graphql(
+                  `mutation($projectId:ID!,$contentId:ID!){ addProjectV2ItemByContent(input:{projectId:$projectId,contentId:$contentId}){ item { id } } }`,
+                  { projectId, contentId: issueNodeId }
+                );
+                itemId = addRes.addProjectV2ItemByContent.item.id;
+                core.info(`Added issue to project; itemId=${itemId}`);
+              } else {
+                core.info(`Found existing project item ${itemId}`);
+              }
+
+              // update the project item field
+              const MUT = `
+                mutation($projectId:ID!,$itemId:ID!,$fieldId:ID!,$optionId:String!){
+                  updateProjectV2ItemFieldValue(input:{
+                    projectId:$projectId,
+                    itemId:$itemId,
+                    fieldId:$fieldId,
+                    value:{ singleSelectOptionId:$optionId }
+                  }) {
+                    projectV2Item { id }
+                  }
+                }
+              `;
+              await github.graphql(MUT, { projectId, itemId, fieldId: priorityField.id, optionId: option.id });
+              core.info(`Priority synced: set '${priorityField.name}' -> '${option.name}' on item ${itemId}`);
+
+              // remove the Priority line/block from the issue body (first occurrence)
+              try {
+                let newBody = rawBody;
+                newBody = newBody.replace(/(?:\r?\n)?\s*(?:\*\*Priority\*\*|Priority)\s*:\s*.*(?:\r?\n)?/i, '\n');
+                newBody = newBody.replace(/(?:\r?\n)?\s*#{1,6}\s*\*?Priority\*?\s*(?:\r?\n)+\s*[^\r\n]+(?:\r?\n)?/i, '\n');
+                newBody = newBody.trim();
+                if (newBody !== rawBody) {
+                  await github.rest.issues.update({ owner, repo, issue_number: issueNumber, body: newBody });
+                  core.info("Removed Priority line/block from issue body.");
+                }
+              } catch (err) {
+                core.warning(`Failed to update issue body to remove Priority: ${err.message}`);
+              }
+
+            } catch (e) {
+              core.setFailed(`Unhandled error in sync script: ${e.message}`);
+            }

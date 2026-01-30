@@ -1,0 +1,116 @@
+name: Debug Project Priority Field (REST + GraphQL)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    env:
+      PROJECT_NUMBER: 1
+    steps:
+      - name: Debug project type and Priority field
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const projectNumber = parseInt(process.env.PROJECT_NUMBER, 10);
+
+            core.info(`Owner: ${owner}, Repo: ${repo}, Project number: ${projectNumber}`);
+
+            // 1) Try REST: list user projects (classic v1) and check html_url
+            try {
+              core.info("Checking user projects via REST (classic projects v1) ...");
+              const restRes = await github.request('GET /users/{username}/projects', {
+                username: owner,
+                headers: { accept: 'application/vnd.github.inertia-preview+json' }
+              });
+              const projects = restRes.data || [];
+              core.info(`Found ${projects.length} user projects (REST).`);
+              const match = projects.find(p => {
+                // html_url like https://github.com/users/OWNER/projects/NUMBER
+                return p.html_url && p.html_url.endsWith(`/users/${owner}/projects/${projectNumber}`);
+              });
+              if (match) {
+                core.info(`Project appears to be classic (v1) project: id=${match.id}, name='${match.name}', html_url=${match.html_url}`);
+                core.setFailed("Detected a classic (v1) Project. The sync script targets Project V2. If you want to sync to a classic project, we must change approach (columns/cards) or use labels instead.");
+                return;
+              } else {
+                core.info("No classic (v1) project matched the given number via REST. Proceeding to GraphQL checks for Project V2...");
+              }
+            } catch (e) {
+              core.warning(`REST check failed or returned no projects: ${e.message}. Continuing to GraphQL checks.`);
+            }
+
+            // 2) GraphQL: try safe read of user projectV2 fields (no risky fragments)
+            const Q_FIELDS = `
+              query($owner:String!, $projectNumber:Int!) {
+                user(login:$owner) {
+                  projectV2(number:$projectNumber) {
+                    id
+                    title
+                    fields(first:100) {
+                      nodes {
+                        id
+                        name
+                        __typename
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+            try {
+              const res = await github.graphql(Q_FIELDS, { owner, projectNumber });
+              const project = res.user && res.user.projectV2;
+              if (!project) {
+                core.setFailed(`Project V2 #${projectNumber} not found for user ${owner}.`);
+                return;
+              }
+              core.info(`ProjectV2 id=${project.id}, title='${project.title || ''}'`);
+              const fields = project.fields && project.fields.nodes || [];
+              core.info(`ProjectV2 fields (${fields.length}): ${fields.map(f => `${f.name} (id=${f.id}, type=${f.__typename})`).join(' | ')}`);
+
+              const priorityField = fields.find(f => f.name && f.name.toLowerCase().includes('priority'));
+              if (!priorityField) {
+                core.setFailed("Priority field not found among ProjectV2 fields above.");
+                return;
+              }
+              core.info(`Priority field: id=${priorityField.id}, name='${priorityField.name}', __typename=${priorityField.__typename}`);
+
+              // 3) Try to fetch node raw typename (safe)
+              try {
+                const Q_NODE = `query($id:ID!) { node(id:$id) { __typename } }`;
+                const nodeRes = await github.graphql(Q_NODE, { id: priorityField.id });
+                core.info(`node __typename = ${JSON.stringify(nodeRes.node && nodeRes.node.__typename)}`);
+              } catch (err) {
+                core.warning(`node(__typename) failed: ${err.message}`);
+              }
+
+              // 4) Try a node-based full attempt (will likely error if schema mismatch)
+              const Q_NODE_FULL = `
+                query($id:ID!) {
+                  node(id:$id) {
+                    __typename
+                    ... on ProjectV2SingleSelectField {
+                      configuration { __typename }
+                      settings { __typename }
+                      options { id name }
+                    }
+                  }
+                }
+              `;
+              try {
+                const full = await github.graphql(Q_NODE_FULL, { id: priorityField.id });
+                core.info("Variant node full succeeded:");
+                core.info(JSON.stringify(full, null, 2));
+              } catch (e) {
+                core.warning(`Variant node full failed: ${e.message}`);
+              }
+
+              core.info("GraphQL debug complete.");
+            } catch (e) {
+              core.setFailed(`GraphQL fields read failed: ${e.message}`);
+            }

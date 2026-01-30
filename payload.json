@@ -1,0 +1,4 @@
+{
+  "query": "query($id:ID!){ node(id:$id){ __typename ... on ProjectV2 { id title fields(first:100){ nodes{ __typename ... on ProjectV2Field { id name } ... on ProjectV2SingleSelectField { id name options { id name } } } } items(first:100){ nodes{ id content{ ... on Issue { id } } } } } } }",
+  "variables": { "id": "PVT_kwHOABAWs84BMv6q" }
+}
